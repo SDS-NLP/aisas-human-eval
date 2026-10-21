@@ -115,6 +115,7 @@
   const ACTION_NAME = { click: "Click", scroll: "Scroll", input: "Typed input", navigation: "Page navigation", tab_activate: "Tab switch" };
   function segmentLabels(logs, marks) { const out = []; let cur = null; for (const l of logs) { if (marks[l.log_id]) cur = marks[l.log_id].label; out.push(cur); } return out; }
   let toastTimer;
+  let compFeedback = null; // {pid, attempt}: shown inside the comprehension panel after a wrong attempt (a toast alone was easy to miss)
   function toast(msg) { const el = document.getElementById("toast"); el.textContent = msg; el.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, 3500); }
 
   // ---------- header / stepper ----------
@@ -228,6 +229,7 @@
   }
 
   // ---------- practice + comprehension ----------
+  function showCompPanel() { const el = document.getElementById("comp-panel"); if (el) el.scrollIntoView({ block: "start" }); }
   function practiceItems() { return Array.isArray(CFG.practice) ? CFG.practice : []; }
   function renderPractice(idx) {
     if (LOCAL) { location.hash = started() ? "#/sessions" : "#/consent"; return; } // the researcher's own local evaluation has no practice / comprehension step
@@ -262,6 +264,7 @@
       onMarksChange: () => saveState(),
       footer: `<div class="panel" id="comp-panel">
         <h3>Comprehension check</h3>
+        ${!passedThis && compFeedback && compFeedback.pid === pid ? `<div class="blocker" id="comp-feedback" role="alert"><b>Attempt ${compFeedback.attempt} of 2: ${qs.length > 1 ? "not all answers are as intended" : "that is not the intended answer"}.</b> Your ${qs.length > 1 ? "answers have" : "answer has"} been cleared. Please re-read the Stage guide (button at the top right) and answer again. This is your last attempt.</div>` : ""}
         ${passedThis ? `<div class="success">Correct. You can continue.</div>` : `${qs.map((q, qi) => `<div class="comp-q"><p>${qs.length > 1 ? `<b>${qi + 1}.</b> ` : ""}${esc(q.question || "")}</p>
           <div class="options">${(q.options || []).map((o, k) => `<label><input type="radio" name="comp-${qi}" value="${k}"> ${esc(o)}</label>`).join("")}</div></div>`).join("")}
           <p class="muted small">Attempts used: ${attempts} of 2.${qs.length > 1 ? " All questions must be answered correctly." : ""}</p>
@@ -278,9 +281,9 @@
       if (sels.every((s, qi) => Number(s.value) === Number(qs[qi].correct_index))) {
         state.practice.passed_items = { ...(state.practice.passed_items || {}), [pid]: true };
         if (items.every((it, k) => state.practice.passed_items[it.id || `practice_${k + 1}`])) state.practice.passed = true;
-        persist(); renderPractice(i);
+        compFeedback = null; document.getElementById("toast").hidden = true; persist(); renderPractice(i); showCompPanel();
       } else if (a >= 2) { state.practice.failed = true; persist(); renderReturn("comprehension"); }
-      else { persist(); toast(qs.length > 1 ? "Not all answers are as intended. Please re-read the stage guide and try once more." : "That is not the intended answer. Please re-read the stage guide and try once more."); renderPractice(i); }
+      else { compFeedback = { pid, attempt: a }; persist(); toast(qs.length > 1 ? "Not all answers are as intended. Please re-read the stage guide and try once more." : "That is not the intended answer. Please re-read the stage guide and try once more."); renderPractice(i); showCompPanel(); }
     });
     renderHeader("practice");
   }
