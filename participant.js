@@ -116,7 +116,7 @@
   function segmentLabels(logs, marks) { const out = []; let cur = null; for (const l of logs) { if (marks[l.log_id]) cur = marks[l.log_id].label; out.push(cur); } return out; }
   let toastTimer;
   const compAnswers = {}; // practice id -> {question index: option} chosen but not yet checked (survives re-renders)
-  let compFeedback = null; // {pid, attempt}: shown inside the comprehension panel after a wrong attempt (a toast alone was easy to miss)
+  let compNotice = null; // {pid, text}: shown inside the comprehension panel (a toast alone was easy to miss)
   function toast(msg) { const el = document.getElementById("toast"); el.textContent = msg; el.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, 3500); }
 
   // ---------- header / stepper ----------
@@ -129,7 +129,7 @@
       case "consent": return started();
       case "instructions": return started() && !!state.instructions_read;
       case "export": return !!state.last_export_at;
-      case "practice": return state.practice.passed || state.practice.skipped_dev;
+      case "practice": return practiceDone();
       case "sessions": return !!ASSIGNED.sessions && ASSIGNED.sessions.length > 0 && ASSIGNED.sessions.every((s) => state.sessions[s.session_uid]?.completed);
       case "review": return !!state.review_confirmed;
       case "submit": return LOCKED();
@@ -230,8 +230,13 @@
   }
 
   // ---------- practice + comprehension ----------
+  // Decided 2026-10-21: one check per practice item, no attempt limit and no exclusion. After "Check answers" the answers are
+  // locked and shown in colour (intended answer green, a different chosen answer red), and the participant continues to the
+  // sessions even if some answers were not as intended. Payload (unchanged shape): practice.passed = every answer of every
+  // item was as intended at its check; practice.attempts[id] = 1 once the item has been checked.
   function showCompPanel() { const el = document.getElementById("comp-panel"); if (el) el.scrollIntoView({ block: "start" }); }
   function practiceItems() { return Array.isArray(CFG.practice) ? CFG.practice : []; }
+  function practiceDone() { return !!(state.practice.checked || state.practice.passed || state.practice.skipped_dev); }
   function renderPractice(idx) {
     if (LOCAL) { location.hash = started() ? "#/sessions" : "#/consent"; return; } // the researcher's own local evaluation has no practice / comprehension step
     lastStep = "practice"; viewer.hidden = true;
@@ -246,37 +251,58 @@
       const b = document.getElementById("btn-skip"); if (b) b.addEventListener("click", () => { state.practice.skipped_dev = true; persist(); location.hash = "#/sessions"; });
       renderHeader("practice"); return;
     }
-    if (state.practice.failed) { renderReturn("comprehension"); return; }
     const i = Math.min(Math.max(idx || 0, 0), items.length - 1);
     const item = items[i];
     const pid = item.id || `practice_${i + 1}`;
     if (!state.practice.marks[pid]) state.practice.marks[pid] = {};
-    const attempts = state.practice.attempts[pid] || 0;
-    const passedThis = state.practice.passed_items && state.practice.passed_items[pid];
+    const result = (state.practice.checked_items || {})[pid] || null; // {answers: [option index per question], correct: [bool per question]}
     const logs = item.logs || [];
     const fakeSession = { session_uid: pid, logs, n_logs: logs.length };
     // An item has either one question (question / options / correct_index) or several (questions: [{question, options, correct_index}]).
-    // All questions of an item are answered together; one "Check answers" press = one attempt (max 2 per item).
     const qs = Array.isArray(item.questions) && item.questions.length ? item.questions
       : [{ question: item.question, options: item.options, correct_index: item.correct_index }];
+    const nOk = result ? result.correct.filter(Boolean).length : 0;
+    const qHtml = qs.map((q, qi) => {
+      const chosen = result ? result.answers[qi] : null;
+      const ok = result ? result.correct[qi] : null;
+      const opts = (q.options || []).map((o, k) => {
+        const intended = !!result && k === Number(q.correct_index);
+        const chosenWrong = !!result && k === chosen && !ok;
+        const tag = intended ? `<span class="opt-tag ok">${k === chosen ? "✓ your answer (as intended)" : "✓ intended answer"}</span>`
+          : chosenWrong ? '<span class="opt-tag ng">✗ your answer</span>' : "";
+        return `<label class="${intended ? "opt-correct" : chosenWrong ? "opt-wrong" : ""}"><input type="radio" name="comp-${qi}" value="${k}"${result ? " disabled" : ""}${result && k === chosen ? " checked" : ""}> ${esc(o)}${tag}</label>`;
+      }).join("");
+      const mark = result ? (ok ? '<span class="q-res ok">✓</span> ' : '<span class="q-res ng">✗</span> ') : "";
+      return `<div class="comp-q"><p>${mark}${qs.length > 1 ? `<b>${qi + 1}.</b> ` : ""}${esc(q.question || "")}</p><div class="options">${opts}</div></div>`;
+    }).join("");
+    const summary = result ? `<div class="${nOk === qs.length ? "success" : "notice"}" id="comp-result" role="status"><b>${nOk} of ${qs.length} answered as intended.</b>
+      ${nOk === qs.length ? "" : "The intended answers are shown in green; an answer that differs is shown in red."}
+      Please keep these examples in mind in your sessions. The Stage guide (top right) is available at any time.</div>` : "";
+    const notice = !result && compNotice && compNotice.pid === pid ? `<div class="blocker" id="comp-feedback" role="alert">${esc(compNotice.text)}</div>` : "";
+    const next = result ? (i + 1 < items.length ? `<a class="btn btn-primary" href="#/practice/${i + 1}">Next practice</a>` : '<a class="btn btn-primary" href="#/sessions">Start the sessions</a>') : "";
     const wireComp = () => {
+      if (result) return; // answers are locked once checked
       // restore answers chosen before a re-render (marking a practice step re-renders the panel) and remember new ones
       const saved = compAnswers[pid] || {};
       qs.forEach((_, qi) => { const r = document.querySelector(`input[name="comp-${qi}"][value="${saved[qi]}"]`); if (r) r.checked = true; });
-      document.querySelectorAll('#comp-panel input[type=radio]').forEach((r) => r.addEventListener("change", () => {
+      document.querySelectorAll("#comp-panel input[type=radio]").forEach((r) => r.addEventListener("change", () => {
         compAnswers[pid] = { ...(compAnswers[pid] || {}), [Number(r.name.slice(5))]: r.value }; }));
       const chk = document.getElementById("btn-check");
       if (chk) chk.addEventListener("click", () => {
-      const sels = qs.map((_, qi) => document.querySelector(`input[name="comp-${qi}"]:checked`));
-      if (sels.some((s) => !s)) { toast(qs.length > 1 ? "Please answer every question first." : "Please choose an answer first."); return; }
-      const a = (state.practice.attempts[pid] || 0) + 1; state.practice.attempts[pid] = a; delete compAnswers[pid];
-      if (sels.every((s, qi) => Number(s.value) === Number(qs[qi].correct_index))) {
-        state.practice.passed_items = { ...(state.practice.passed_items || {}), [pid]: true };
-        if (items.every((it, k) => state.practice.passed_items[it.id || `practice_${k + 1}`])) state.practice.passed = true;
-        compFeedback = null; document.getElementById("toast").hidden = true; persist(); renderPractice(i); showCompPanel();
-      } else if (a >= 2) { state.practice.failed = true; persist(); renderReturn("comprehension"); }
-      else { compFeedback = { pid, attempt: a }; persist(); toast(qs.length > 1 ? "Not all answers are as intended. Please re-read the stage guide and try once more." : "That is not the intended answer. Please re-read the stage guide and try once more."); renderPractice(i); showCompPanel(); }
-    });
+        const sels = qs.map((_, qi) => document.querySelector(`input[name="comp-${qi}"]:checked`));
+        if (sels.some((x) => !x)) {
+          compNotice = { pid, text: qs.length > 1 ? "Please answer every question first." : "Please choose an answer first." };
+          renderPractice(i); showCompPanel(); return;
+        }
+        const answers = sels.map((x) => Number(x.value));
+        const correct = answers.map((k, qi) => k === Number(qs[qi].correct_index));
+        state.practice.checked_items = { ...(state.practice.checked_items || {}), [pid]: { answers, correct } };
+        state.practice.attempts[pid] = 1;
+        const all = items.map((it, k) => state.practice.checked_items[it.id || `practice_${k + 1}`]);
+        if (all.every(Boolean)) { state.practice.checked = true; state.practice.passed = all.every((r) => r.correct.every(Boolean)); }
+        delete compAnswers[pid]; compNotice = null;
+        persist(); renderPractice(i); showCompPanel();
+      });
     };
     renderSessionView(fakeSession, {
       onRender: wireComp,
@@ -285,30 +311,21 @@
       onMarksChange: () => saveState(),
       footer: `<div class="panel" id="comp-panel">
         <h3>Comprehension check</h3>
-        ${!passedThis && compFeedback && compFeedback.pid === pid ? `<div class="blocker" id="comp-feedback" role="alert"><b>Attempt ${compFeedback.attempt} of 2: ${qs.length > 1 ? "not all answers are as intended" : "that is not the intended answer"}.</b> Your ${qs.length > 1 ? "answers have" : "answer has"} been cleared. Please re-read the Stage guide (button at the top right) and answer again. This is your last attempt.</div>` : ""}
-        ${passedThis ? `<div class="success">Correct. You can continue.</div>` : `${qs.map((q, qi) => `<div class="comp-q"><p>${qs.length > 1 ? `<b>${qi + 1}.</b> ` : ""}${esc(q.question || "")}</p>
-          <div class="options">${(q.options || []).map((o, k) => `<label><input type="radio" name="comp-${qi}" value="${k}"> ${esc(o)}</label>`).join("")}</div></div>`).join("")}
-          <p class="muted small">Attempts used: ${attempts} of 2.${qs.length > 1 ? " All questions must be answered correctly." : ""}</p>
+        ${summary}${notice}
+        ${qHtml}
+        ${result ? "" : `<p class="muted small">After you check, the intended answers are shown and you continue to your sessions.</p>
           <div class="actions"><button id="btn-check" class="btn btn-primary">Check ${qs.length > 1 ? "answers" : "answer"}</button></div>`}
         <div class="actions">${i > 0 ? `<a class="btn" href="#/practice/${i - 1}">Previous practice</a>` : '<a class="btn" href="#/instructions">Back to instructions</a>'}
-          ${passedThis ? (i + 1 < items.length ? `<a class="btn btn-primary" href="#/practice/${i + 1}">Next practice</a>` : `<a class="btn btn-primary" href="#/sessions">Start the sessions</a>`) : ""}</div>
+          ${next}</div>
       </div>`,
     });
-    renderHeader("practice");
-  }
-  function renderReturn(reason) {
-    lastStep = "practice"; viewer.hidden = true;
-    main.innerHTML = `<div class="narrow"><div class="panel"><h2>Thank you for your time</h2>
-      <p>${reason === "comprehension" ? "The comprehension check was not answered as intended within two attempts, so this study cannot continue for you." : "This study cannot continue."}</p>
-      <p><b>Please return your submission on Prolific</b> (open the study page on Prolific and choose “Return”). Returning does not count against your account. If you have any questions, please message the researcher through Prolific.</p>
-    </div></div>`;
     renderHeader("practice");
   }
 
   // ---------- assigned sessions list ----------
   function guardSessions() {
     if (!started()) { location.hash = "#/consent"; return false; }
-    if (!LOCAL && !(state.practice.passed || state.practice.skipped_dev)) { location.hash = "#/practice"; return false; }
+    if (!LOCAL && !practiceDone()) { location.hash = "#/practice"; return false; }
     if (!ASSIGNED.sessions || !ASSIGNED.sessions.length) {
       lastStep = "sessions"; viewer.hidden = true;
       main.innerHTML = `<div class="narrow"><div class="panel"><h2>Your sessions</h2><div class="blocker"><b>No sessions have been assigned to this link.</b> The study cannot continue. Please return your submission on Prolific and message the researcher.</div></div></div>`;

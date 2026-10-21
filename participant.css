@@ -149,7 +149,14 @@ td.pos { white-space: nowrap; color: var(--muted); } td.pos b { color: var(--tex
 /* practice / review */
 .options label { display: block; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; margin: 4px 0; cursor: pointer; }
 .options label:has(input:checked) { background: #eff6ff; border-color: #93c5fd; }
-#comp-panel { scroll-margin-top: calc(var(--head-h) + 8px); }  /* scrolled into view after "Check answers", below the sticky headers */
+#comp-panel { scroll-margin-top: calc(var(--head-h) + 8px); }
+/* practice answers after "Check answers" (decided 2026-10-21): intended answer green, a different chosen answer red; text tags too */
+.comp-q .options label.opt-correct { background: #f0fdf4; border-color: #16a34a; }
+.comp-q .options label.opt-wrong { background: #fef2f2; border-color: #dc2626; }
+.comp-q .options label:has(input:disabled) { cursor: default; }
+.opt-tag { margin-left: 8px; font-size: 12px; font-weight: 600; }
+.opt-tag.ok, .q-res.ok { color: #166534; }
+.opt-tag.ng, .q-res.ng { color: #991b1b; }  /* scrolled into view after "Check answers", below the sticky headers */
 table.review { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); }
 table.review th, table.review td { padding: 7px 10px; border-bottom: 1px solid var(--border); text-align: left; }
 table.review th { background: #f1f3f6; }
