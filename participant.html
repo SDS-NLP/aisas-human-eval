@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shopping journey stages</title>
+<link rel="stylesheet" href="participant.css">
+</head>
+<body>
+<div id="dev-banner" class="dev-banner" hidden>DEVELOPMENT PREVIEW - this is not a live study. Nothing you do here is submitted.</div>
+<div id="local-banner" class="local-banner" hidden>LOCAL EVALUATION — results stay in this browser unless exported. Not a live study; nothing is sent.</div>
+<header class="topbar">
+  <div class="topbar-left">
+    <span class="brand" id="brand">Shopping journey stages</span>
+    <nav id="stepper" class="stepper" aria-label="Progress"></nav>
+  </div>
+  <div class="topbar-right">
+    <span id="progress" class="progress-text"></span>
+    <span id="save-status" class="save-status" hidden></span>
+    <button id="btn-export" class="btn" hidden title="Download your current change points as a JSON file">Export progress</button>
+    <button id="btn-import" class="btn" hidden title="Load a previously exported JSON file">Import…</button>
+    <input id="file-import" type="file" accept=".json,application/json" hidden>
+    <button id="btn-guide" class="btn" aria-expanded="false" aria-controls="guide">Stage guide</button>
+  </div>
+</header>
+
+<div id="session-head" class="session-head" hidden aria-label="Current session"></div>
+<div class="layout">
+  <main id="main" class="main" tabindex="-1"></main>
+  <aside id="viewer" class="viewer" hidden aria-label="Selected step"></aside>
+</div>
+<aside id="guide" class="guide" hidden aria-label="Stage guide"></aside>
+<div id="lightbox" class="lightbox" hidden role="dialog" aria-modal="true" aria-label="Enlarged screenshot">
+  <button id="lightbox-close" class="btn lightbox-close">Close (Esc)</button>
+  <img id="lightbox-img" alt="Enlarged screenshot">
+</div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="participant_config.js"></script>
+<script src="participant_codebook_en.js"></script>
+<script src="data/participant_data.js"></script>
+<script src="participant.js"></script>
+</body>
+</html>
