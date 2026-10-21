@@ -700,7 +700,7 @@
       <h3>About this study</h3>
       <p>This study looks at how the stages of a shopping journey can be identified from recorded browsing behaviour. Your change points will be used as human judgements of when each stage begins in a session.</p>
       <p>${cfgText(st.data_sharing, "publication / sharing of anonymised markings")}</p>
-      <h3>Questions or withdrawing your data</h3><p>${cfgText(st.contact, "contact")}</p>
+      <h3>Questions</h3><p>${cfgText(st.contact, "contact")}</p>
     </div></div>`;
     if (c.url) { let n = 8; const note = document.getElementById("redirect-note"); const tick = () => { note.textContent = `Redirecting automatically in ${n} s…`; if (n-- <= 0) { location.href = c.url; return; } setTimeout(tick, 1000); }; tick(); }
     renderHeader("submit");
