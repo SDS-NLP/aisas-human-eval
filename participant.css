@@ -109,7 +109,9 @@ td.pos { white-space: nowrap; color: var(--muted); } td.pos b { color: var(--tex
 
 /* viewer */
 .viewer { position: sticky; top: var(--head-h); width: var(--viewer-w); min-width: var(--viewer-w); max-height: calc(100vh - var(--head-h)); overflow: auto; background: var(--panel); border-left: 1px solid var(--border); padding: 10px 16px; font-size: 13px; }
-.viewer-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px; margin-bottom: 6px; }
+.viewer-head { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 12px; margin-bottom: 6px; }
+.viewer-facts { border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 8px; }
+.viewer-facts h4 { margin: 0 0 4px; font-size: 14px; }
 .viewer-nav { display: flex; gap: 4px; flex-wrap: nowrap; white-space: nowrap; }
 .shot-tabs { display: flex; gap: 4px; margin-bottom: 4px; }
 .shot-area { text-align: center; }

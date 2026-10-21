@@ -475,7 +475,7 @@
     shead.innerHTML = head; shead.hidden = false; setTopOffset();
     main.innerHTML = `<table class="steps" aria-label="Steps of this session"><thead><tr><th class="th-pos">Step</th><th class="th-band">Stage</th><th class="th-mark">Change point: from this step the stage is…</th></tr></thead>
       <tbody>${body.join("") || '<tr><td colspan="3" class="empty">No change points yet.</td></tr>'}</tbody></table>
-      <div class="kbd-help">Keyboard: <kbd>↑</kbd>/<kbd>↓</kbd> select step · <kbd>1</kbd>–<kbd>${LABELS.length}</kbd> set stage on the selected step (${LABELS.map((k, i) => `${i + 1}=${LABEL_NAME[k]}`).join(", ")}) · <kbd>Delete</kbd> remove its change point · <kbd>Enter</kbd> on the screenshot to enlarge · <kbd>Esc</kbd> close</div>
+      <div class="kbd-help">Keyboard: <kbd>↑</kbd>/<kbd>↓</kbd> select step · <kbd>1</kbd>–<kbd>${LABELS.length}</kbd> set stage on the selected step (${LABELS.map((k, i) => `${i + 1}=${LABEL_NAME[k]}`).join(", ")}) · <kbd>Delete</kbd> remove its change point · <kbd>Shift</kbd>+<kbd>=</kbd> enlarge the screenshot · <kbd>-</kbd> close</div>
       ${opts.footer || ""}`;
     shead.querySelectorAll(".filter").forEach((b) => b.addEventListener("click", () => { view.filter = b.dataset.f; logEvent("filter", { s: evSession(), f: view.filter }); renderSessionView(s, opts, true); }));
     main.querySelectorAll("tr.step").forEach((tr) => wireRow(tr));
@@ -562,16 +562,18 @@
     const actText = l.observation && (l.observation.element_text || (l.action_type === "input" ? l.observation.input_text : null));
     const meta = opts.practice ? {} : (state.sessions[s.session_uid] || {});
     const viewedAll = (meta.max_pos_viewed || 0) >= s.logs.length;
+    // Layout (advisor review 2026-10-21): Previous / Next on the left, next to the stage buttons of the step table, and
+    // "What happened" above the screenshot, so that the action is read before the screen.
     viewer.innerHTML = `
-      <div class="viewer-head"><div><b>Step #${l.pos}</b> · +${fmtT(l.t_rel_s)} · stage here: ${chip(seg[i])}</div>
-        <div class="viewer-nav"><button class="btn" id="v-prev" ${i === 0 ? "disabled" : ""}>↑ Previous</button><button class="btn" id="v-next" ${i === s.logs.length - 1 ? "disabled" : ""}>Next ↓</button></div></div>
-      ${shotHtml}
-      <div class="viewer-section"><h4>What happened</h4>
+      <div class="viewer-head"><div class="viewer-nav"><button class="btn" id="v-prev" ${i === 0 ? "disabled" : ""}>↑ Previous</button><button class="btn" id="v-next" ${i === s.logs.length - 1 ? "disabled" : ""}>Next ↓</button></div>
+        <div><b>Step #${l.pos}</b> · +${fmtT(l.t_rel_s)} · stage here: ${chip(seg[i])}</div></div>
+      <div class="viewer-facts"><h4>What happened</h4>
         <dl class="facts">
           <dt>Page</dt><dd>${pageBadge(l.page_kind)} <span class="mono path">${esc(l.url_path)}</span></dd>
           <dt>Action</dt><dd><b>${ACTION_NAME[l.action_type] || esc(l.action_type)}</b>${sub ? ` <span class="muted">(${esc(String(sub).replace(/_/g, " "))})</span>` : ""}${actText ? `<div class="target">“${esc(actText)}”</div>` : ""}</dd>
           ${l.rationale ? `<dt>Rationale</dt><dd class="rat-dd">${esc(l.rationale)}</dd>` : ""}
         </dl></div>
+      ${shotHtml}
       ${opts.practice ? "" : `<div class="viewer-section">
         <textarea id="sess-comment" class="session-comment" placeholder="Comment on this session (optional)" ${locked ? "disabled" : ""}>${esc(meta.comment || "")}</textarea>
         <div class="actions"><button id="btn-complete" class="btn ${meta.completed ? "btn-done" : "btn-primary"}" ${locked ? "disabled" : ""}>${meta.completed ? "Reopen this session" : "Mark this session as complete"}</button>
@@ -610,10 +612,19 @@
   lb.addEventListener("click", (e) => { if (e.target === lb || e.target === lbImg) closeLightbox(); });
 
   // ---------- keyboard ----------
+  // 2026-10-21 (requester): Shift+= ("+") enlarges the screenshot without having to focus it first, and "-" closes the
+  // enlarged screenshot or the Stage guide. Esc still closes as well (not advertised). Shortcuts are ignored while typing
+  // in a text field and while Cmd / Ctrl / Alt is held, so that browser shortcuts such as Cmd+= / Cmd+- (zoom) keep working.
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { if (!lb.hidden) { closeLightbox(); return; } const g = document.getElementById("guide"); if (!g.hidden) toggleGuide(); return; }
+    const t = e.target; const typing = !!(t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable));
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === "Escape" || (e.key === "-" && !typing)) {
+      if (!lb.hidden) { e.preventDefault(); closeLightbox(); return; }
+      const g = document.getElementById("guide"); if (!g.hidden) { e.preventDefault(); toggleGuide(); } return;
+    }
     if (!current || viewer.hidden) return;
-    const t = e.target; if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    if (typing) return;
+    if (e.key === "+" || e.key === "=") { const sw = document.getElementById("shot-wrap"); if (sw && lb.hidden) { e.preventDefault(); sw.click(); } return; }
     const { s, opts } = current; const i = s.logs.findIndex((l) => l.log_id === selectedLogId); if (i < 0) return;
     if (e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); if (i + 1 < s.logs.length) selectLog(s.logs[i + 1].log_id, true); }
     else if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); if (i > 0) selectLog(s.logs[i - 1].log_id, true); }
