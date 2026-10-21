@@ -83,16 +83,18 @@
   const BUNDLE_FP = bundleFingerprint();
   const NS_KEY = LOCAL ? `aisas_local_eval_v1:cb-${CODEBOOK_VERSION}:${BUNDLE_FP}`
     : `aisas_prolific_v1:cb-${CODEBOOK_VERSION}:${isPlaceholder(CFG.study_id) ? "unconfigured" : CFG.study_id}:${allocToken || "noalloc"}`;
-  function blankState() { return { consent_at: null, practice: { attempts: {}, passed: false, skipped_dev: false, marks: {} }, marks: {}, sessions: {}, submission: { status: "none", attempts: 0, receipt: null, submitted_at: null, last_error: null } }; }
+  function blankTiming() { return { practice: {}, sessions: {}, events: [], events_dropped: 0 }; }
+  function blankState() { return { consent_at: null, practice: { attempts: {}, passed: false, skipped_dev: false, marks: {} }, marks: {}, sessions: {}, timing: blankTiming(), submission: { status: "none", attempts: 0, receipt: null, submitted_at: null, last_error: null } }; }
   let state = loadState();
   function loadState() {
-    try { const raw = localStorage.getItem(NS_KEY); if (raw) { const s = JSON.parse(raw); const b = blankState(); return { ...b, ...s, practice: { ...b.practice, ...(s.practice || {}) }, submission: { ...b.submission, ...(s.submission || {}) } }; } }
+    try { const raw = localStorage.getItem(NS_KEY); if (raw) { const s = JSON.parse(raw); const b = blankState(); return { ...b, ...s, practice: { ...b.practice, ...(s.practice || {}) }, timing: { ...b.timing, ...(s.timing || {}) }, submission: { ...b.submission, ...(s.submission || {}) } }; } }
     catch (e) { console.warn("state read failed", e); }
     return blankState();
   }
   let saveTimer = null;
   let lastSavedAt = null;
   function persist() {
+    flushActive();
     try { localStorage.setItem(NS_KEY, JSON.stringify(state)); lastSavedAt = new Date(); renderSaveStatus(true); }
     catch (e) { renderSaveStatus(false, e.message); toast("Your progress could not be saved in this browser: " + e.message); }
   }
@@ -102,11 +104,69 @@
     el.textContent = ok ? `Saved ${lastSavedAt.toLocaleTimeString()} (this browser only)` : `Not saved: ${msg}`;
     el.classList.toggle("save-error", !ok);
   }
-  function saveState() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { persist(); renderHeader(); }, 250); }
-  window.addEventListener("beforeunload", () => { if (saveTimer) { clearTimeout(saveTimer); persist(); } });
+  function saveState() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { saveTimer = null; persist(); renderHeader(); }, 250); }
+  // Write only when this page has something to save (a pending change, or time on screen to add): a page that merely
+  // closes must not overwrite what another tab of the same link saved.
+  function persistPending() { if (saveTimer || activeTarget) { clearTimeout(saveTimer); saveTimer = null; persist(); } }
+  window.addEventListener("beforeunload", () => persistPending());
   const now = () => new Date().toISOString();
   const marksOf = (uid) => state.marks[uid] || {};
   const LOCKED = () => !LOCAL && state.submission.status === "submitted";
+
+  // ---------- timing (decided 2026-10-21): phase times, time on screen per session, and a short event log ----------
+  // Used to measure where the time goes in the pilot (and in LOCAL mode, the researcher's own time). Recorded only after
+  // consent (LOCAL: after "Start local evaluation"); every event has t = ms since then. Nothing is recorded after submission.
+  // active_ms = time the session (or practice item) was on screen while the tab was visible.
+  const MAX_EVENTS = 3000;
+  const MAX_T_MS = 3 * 86400 * 1000; // the endpoint accepts t and active_ms up to 3 days; later events are counted as dropped
+  const MAX_GAP_MS = 60000; // the time counter ticks every 15 s; a longer gap (timers suspended, e.g. the computer slept) counts as 60 s at most
+  const TM = () => state.timing || (state.timing = blankTiming());
+  const startMs = () => Date.parse(LOCAL ? state.local_started_at : state.consent_at);
+  function logEvent(e, fields) {
+    const t0 = startMs();
+    if (!Number.isFinite(t0) || LOCKED()) return;
+    const tm = TM(); const t = Math.max(0, Date.now() - t0);
+    if (tm.events.length >= MAX_EVENTS || t > MAX_T_MS) { tm.events_dropped = (tm.events_dropped || 0) + 1; return; }
+    const ev = { t, e };
+    for (const [k, v] of Object.entries(fields || {})) if (v !== null && v !== undefined) ev[k] = v; // never send an empty field
+    tm.events.push(ev);
+    saveState();
+  }
+  function stampOnce(obj, key) { if (obj && !obj[key]) obj[key] = now(); }
+  let activeTarget = null, activeSince = null; // {kind: "sessions"|"practice", key}
+  const visible = () => document.visibilityState === "visible";
+  function flushActive() {
+    if (activeTarget && activeSince !== null) {
+      const d = Math.min(Math.max(0, Date.now() - activeSince), MAX_GAP_MS);
+      if (!LOCKED()) { const rec = TM()[activeTarget.kind][activeTarget.key] ||= {}; rec.active_ms = Math.min((rec.active_ms || 0) + d, MAX_T_MS); }
+    }
+    activeSince = activeTarget && visible() ? Date.now() : null;
+  }
+  function setActive(kind, key) {
+    flushActive();
+    activeTarget = kind && !LOCKED() ? { kind, key } : null;
+    activeSince = activeTarget && visible() ? Date.now() : null;
+    if (activeTarget) stampOnce(TM()[kind][key] ||= {}, "first_opened_at");
+  }
+  setInterval(() => { if (activeTarget && activeSince !== null) persist(); }, 15000);
+  document.addEventListener("visibilitychange", () => { logEvent(visible() ? "visible" : "hidden"); if (!visible()) persistPending(); else flushActive(); });
+  window.addEventListener("pagehide", () => persistPending());
+  // s in events: 1-based number of the assigned session, or "practice"
+  const evSession = () => current ? (current.opts.practice ? "practice" : current.opts.index + 1) : null;
+  const evPos = (logId) => current ? current.s.logs.find((l) => l.log_id === logId)?.pos || 0 : 0;
+  function buildTiming() {
+    flushActive();
+    const tm = TM(); const ms = (v) => Math.min(Math.round(Number(v) || 0), MAX_T_MS); const ts = (v) => (typeof v === "string" ? v : null);
+    return {
+      schema: "aisas_timing_v1", instructions_done_at: ts(tm.instructions_done_at), practice_checked_at: ts(tm.practice_checked_at),
+      review_opened_at: ts(tm.review_opened_at), submit_opened_at: ts(tm.submit_opened_at),
+      practice: LOCAL ? [] : practiceItems().map((it, k) => { const id = it.id || `practice_${k + 1}`; const x = tm.practice[id] || {};
+        return { id, first_opened_at: ts(x.first_opened_at), checked_at: ts(x.checked_at), active_ms: ms(x.active_ms) }; }),
+      sessions: (ASSIGNED.sessions || []).map((x) => { const r = tm.sessions[x.session_uid] || {};
+        return { session_uid: x.session_uid, first_opened_at: ts(r.first_opened_at), completed_at: ts(r.completed_at), active_ms: ms(r.active_ms) }; }),
+      events: tm.events.slice(0, MAX_EVENTS), events_dropped: tm.events_dropped || 0,
+    };
+  }
 
   // ---------- helpers ----------
   function fmtT(sec) { const s = Math.round(sec); const m = Math.floor(s / 60), r = s % 60; return (m ? m + "m " : "") + r + "s"; }
@@ -225,7 +285,7 @@
       <p>Judge from the observable steps and the surrounding context of the same session. The stages do not have to occur in order.</p>
       <div class="actions"><a class="btn" href="#/consent">Back</a><button id="btn-next" class="btn btn-primary">${LOCAL ? "Continue to sessions" : "Continue to practice"}</button></div>
     </div></div>`;
-    document.getElementById("btn-next").addEventListener("click", () => { state.instructions_read = true; persist(); location.hash = LOCAL ? "#/sessions" : "#/practice"; });
+    document.getElementById("btn-next").addEventListener("click", () => { state.instructions_read = true; stampOnce(TM(), "instructions_done_at"); persist(); location.hash = LOCAL ? "#/sessions" : "#/practice"; });
     renderHeader("instructions");
   }
 
@@ -256,6 +316,7 @@
     const pid = item.id || `practice_${i + 1}`;
     if (!state.practice.marks[pid]) state.practice.marks[pid] = {};
     const result = (state.practice.checked_items || {})[pid] || null; // {answers: [option index per question], correct: [bool per question]}
+    if (!activeTarget || activeTarget.key !== pid) setActive("practice", pid);
     const logs = item.logs || [];
     const fakeSession = { session_uid: pid, logs, n_logs: logs.length };
     // An item has either one question (question / options / correct_index) or several (questions: [{question, options, correct_index}]).
@@ -298,8 +359,10 @@
         const correct = answers.map((k, qi) => k === Number(qs[qi].correct_index));
         state.practice.checked_items = { ...(state.practice.checked_items || {}), [pid]: { answers, correct } };
         state.practice.attempts[pid] = 1;
+        stampOnce(TM().practice[pid] ||= {}, "checked_at");
+        logEvent("practice_check", { s: "practice", i: i + 1, n_ok: correct.filter(Boolean).length });
         const all = items.map((it, k) => state.practice.checked_items[it.id || `practice_${k + 1}`]);
-        if (all.every(Boolean)) { state.practice.checked = true; state.practice.passed = all.every((r) => r.correct.every(Boolean)); }
+        if (all.every(Boolean)) { state.practice.checked = true; state.practice.passed = all.every((r) => r.correct.every(Boolean)); stampOnce(TM(), "practice_checked_at"); }
         delete compAnswers[pid]; compNotice = null;
         persist(); renderPractice(i); showCompPanel();
       });
@@ -364,6 +427,7 @@
     if (!s) { location.hash = "#/sessions"; return; }
     lastStep = "sessions";
     if (!state.marks[s.session_uid]) state.marks[s.session_uid] = {};
+    setActive("sessions", s.session_uid);
     renderSessionView(s, {
       practice: false, index: i, total: ASSIGNED.sessions.length, title: `Session ${i + 1} of ${ASSIGNED.sessions.length}`,
       marks: state.marks[s.session_uid], onMarksChange: () => saveState(),
@@ -413,7 +477,7 @@
       <tbody>${body.join("") || '<tr><td colspan="3" class="empty">No change points yet.</td></tr>'}</tbody></table>
       <div class="kbd-help">Keyboard: <kbd>↑</kbd>/<kbd>↓</kbd> select step · <kbd>1</kbd>–<kbd>${LABELS.length}</kbd> set stage on the selected step (${LABELS.map((k, i) => `${i + 1}=${LABEL_NAME[k]}`).join(", ")}) · <kbd>Delete</kbd> remove its change point · <kbd>Enter</kbd> on the screenshot to enlarge · <kbd>Esc</kbd> close</div>
       ${opts.footer || ""}`;
-    shead.querySelectorAll(".filter").forEach((b) => b.addEventListener("click", () => { view.filter = b.dataset.f; renderSessionView(s, opts, true); }));
+    shead.querySelectorAll(".filter").forEach((b) => b.addEventListener("click", () => { view.filter = b.dataset.f; logEvent("filter", { s: evSession(), f: view.filter }); renderSessionView(s, opts, true); }));
     main.querySelectorAll("tr.step").forEach((tr) => wireRow(tr));
     renderViewer();
     if (typeof opts.onRender === "function") opts.onRender(); // footer controls are re-created on every render: wire them again
@@ -424,9 +488,10 @@
     const { marks, opts } = current;
     const cur = marks[logId] || {};
     marks[logId] = { label, comment: cur.comment || "", updated_at: now() };
+    logEvent("mark", { s: evSession(), p: evPos(logId), l: label });
     opts.onMarksChange();
   }
-  function removeMark(logId) { delete current.marks[logId]; current.opts.onMarksChange(); }
+  function removeMark(logId) { delete current.marks[logId]; logEvent("unmark", { s: evSession(), p: evPos(logId) }); current.opts.onMarksChange(); }
   function rerender() { renderSessionView(current.s, current.opts, true); }
   function wireRow(tr) {
     const logId = tr.dataset.log;
@@ -436,8 +501,9 @@
     const x = tr.querySelector(".xmark"); if (x) x.addEventListener("click", (e) => { e.preventDefault(); removeMark(logId); rerender(); });
     const ci = tr.querySelector(".mark-comment"); if (ci) ci.addEventListener("input", (e) => { const mk = current.marks[logId]; if (mk) { mk.comment = e.target.value; mk.updated_at = now(); current.opts.onMarksChange(); } });
   }
-  function selectLog(logId, scrollRow) {
+  function selectLog(logId, scrollRow) { // only called for a participant's selection (click, keyboard, Previous / Next)
     selectedLogId = logId; viewerShot = "auto";
+    logEvent("select", { s: evSession(), p: evPos(logId) });
     main.querySelectorAll("tr.step.selected").forEach((t) => { t.classList.remove("selected"); t.setAttribute("aria-selected", "false"); });
     const tr = main.querySelector(`tr.step[data-log="${logId}"]`);
     if (tr) { tr.classList.add("selected"); tr.setAttribute("aria-selected", "true"); if (scrollRow) tr.scrollIntoView({ block: "nearest" }); }
@@ -518,7 +584,7 @@
     const vimg = document.getElementById("viewer-img");
     if (vimg) { vimg.addEventListener("load", fitShot); requestAnimationFrame(fitShot); }
     const sw = document.getElementById("shot-wrap");
-    if (sw) { const open = () => openLightbox(sw.querySelector("img")?.src); sw.addEventListener("click", open); sw.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } }); }
+    if (sw) { const open = () => { logEvent("zoom", { s: evSession(), p: l.pos }); openLightbox(sw.querySelector("img")?.src); }; sw.addEventListener("click", open); sw.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } }); }
     const sc = document.getElementById("sess-comment");
     if (sc) sc.addEventListener("input", (e) => { const m = state.sessions[s.session_uid] || {}; state.sessions[s.session_uid] = { ...m, comment: e.target.value, updated_at: now() }; saveState(); });
     const bc = document.getElementById("btn-complete");
@@ -529,7 +595,9 @@
         const va = (m.max_pos_viewed || 0) >= s.logs.length;
         if (!va && !confirm(`You have viewed steps up to #${m.max_pos_viewed || 1} of ${s.logs.length}. Mark this session as complete anyway?`)) return;
         state.sessions[s.session_uid] = { ...m, completed: true, updated_at: now() };
-      } else state.sessions[s.session_uid] = { ...m, completed: false, updated_at: now() };
+        stampOnce(TM().sessions[s.session_uid] ||= {}, "completed_at");
+        logEvent("complete", { s: evSession() });
+      } else { state.sessions[s.session_uid] = { ...m, completed: false, updated_at: now() }; logEvent("uncomplete", { s: evSession() }); }
       persist(); rerender(); renderHeader("sessions");
     });
   }
@@ -557,6 +625,7 @@
   function renderReview() {
     lastStep = "review"; viewer.hidden = true;
     if (!guardSessions()) return;
+    if (!LOCKED()) stampOnce(TM(), "review_opened_at");
     const rows = ASSIGNED.sessions.map((s, i) => {
       const m = state.sessions[s.session_uid] || {}; const marks = marksOf(s.session_uid);
       const first = !!marks[s.logs[0].log_id]; const viewed = (m.max_pos_viewed || 0) >= s.logs.length;
@@ -605,6 +674,7 @@
         return { session_uid: s.session_uid, completed: !!m.completed, comment: m.comment || "", max_pos_viewed: m.max_pos_viewed || 0,
           transitions: s.logs.filter((l) => marks[l.log_id]).map((l) => ({ log_id: l.log_id, action_id: l.action_id, pos: l.pos, label: marks[l.log_id].label, comment: marks[l.log_id].comment || "", updated_at: marks[l.log_id].updated_at })) };
       }),
+      timing: buildTiming(),
       client: { user_agent: navigator.userAgent, viewport: { w: window.innerWidth, h: window.innerHeight }, dev_preview: DEV },
       submitted_at: now(),
     };
@@ -634,7 +704,7 @@
     const ep = CFG.endpoint || {};
     const status = document.getElementById("submit-status");
     if (!ep.url) { status.innerHTML = '<div class="error"><b>The result endpoint is not configured.</b> Your work is saved in this browser, but it cannot be sent. Please message the researcher on Prolific and do not close this browser.</div>'; return; }
-    const payload = buildPayload();
+    const payload = buildPayload(); // built once per press of "Send": the retries below send exactly this payload
     const maxRetries = Number.isInteger(ep.max_retries) ? ep.max_retries : 2; const timeoutMs = ep.timeout_ms || 20000;
     document.getElementById("btn-submit").disabled = true;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -646,6 +716,13 @@
           state.submission = { ...state.submission, status: "submitted", submitted_at: now(), receipt: json.receipt_id || json.receipt || null, last_error: null,
             completion: endpointCompletion(json.completion) }; persist();
           location.hash = "#/receipt"; return;
+        }
+        // The timing record must never block a submission: if the endpoint rejects only `timing` (e.g. a Worker deployed
+        // before 2026-10-21, which refuses unknown fields), send the same payload once more without it.
+        if (res.status === 400 && payload.timing && json && json.error === "invalid_payload" && Array.isArray(json.problems)
+          && json.problems.length && json.problems.every((x) => /\btiming\b/.test(String(x)))) {
+          console.warn("the endpoint did not accept the timing record; sending without it", json.problems);
+          delete payload.timing; attempt--; continue;
         }
         const msg = `The server did not confirm receipt (HTTP ${res.status}${json ? ", response: " + esc(JSON.stringify(json)).slice(0, 200) : ""}).`;
         state.submission.last_error = msg;
@@ -670,6 +747,7 @@
     if (!guardSessions()) return;
     if (LOCKED()) { location.hash = "#/receipt"; return; }
     if (!state.review_confirmed) { location.hash = "#/review"; return; }
+    stampOnce(TM(), "submit_opened_at"); persist();
     const ep = CFG.endpoint || {};
     const n = ASSIGNED.sessions.length; const nm = ASSIGNED.sessions.reduce((a, s) => a + Object.keys(marksOf(s.session_uid)).length, 0);
     main.innerHTML = `<div class="narrow"><div class="panel"><h2>Submit your results</h2>
@@ -714,7 +792,7 @@
     h += `<h4>When in doubt</h4>${list(cb.tie_break_rules)}`;
     const g = document.getElementById("guide"); g.innerHTML = h; g.querySelector("#guide-close").addEventListener("click", toggleGuide);
   }
-  function toggleGuide() { const g = document.getElementById("guide"); g.hidden = !g.hidden; const b = document.getElementById("btn-guide"); b.classList.toggle("btn-active", !g.hidden); b.setAttribute("aria-expanded", String(!g.hidden)); }
+  function toggleGuide() { const g = document.getElementById("guide"); g.hidden = !g.hidden; logEvent(g.hidden ? "guide_close" : "guide_open"); const b = document.getElementById("btn-guide"); b.classList.toggle("btn-active", !g.hidden); b.setAttribute("aria-expanded", String(!g.hidden)); }
   document.getElementById("btn-guide").addEventListener("click", toggleGuide);
 
   // ---------- LOCAL EVALUATION: export / import (never used in the Prolific flow) ----------
@@ -731,6 +809,8 @@
         return { session_uid: x.session_uid, n_logs: x.logs.length, completed: !!m.completed, comment: m.comment || "", max_pos_viewed: m.max_pos_viewed || 0,
           transitions: x.logs.filter((l) => marks[l.log_id]).map((l) => ({ log_id: l.log_id, action_id: l.action_id, pos: l.pos, label: marks[l.log_id].label, comment: marks[l.log_id].comment || "", updated_at: marks[l.log_id].updated_at })) };
       }),
+      timing: buildTiming(), // the same shape as in the Prolific payload; consent_at there = started_at here
+      started_at: state.local_started_at || null,
     };
   }
   function exportLocal(final) {
@@ -777,9 +857,20 @@
   }
 
   // ---------- routing ----------
+  function routeEvent(h) {
+    let m;
+    // numbers only when they exist (a hand-typed #/s/99 is recorded as a route without a session number)
+    const nS = ASSIGNED.sessions ? ASSIGNED.sessions.length : 0, nP = Math.min(practiceItems().length, 50);
+    if ((m = h.match(/^#\/s\/(\d+)$/))) { const n = Number(m[1]); return n >= 1 && n <= nS ? { r: "s", s: n } : { r: "s" }; }
+    if ((m = h.match(/^#\/practice(?:\/(\d+))?$/))) { const n = (m[1] ? Number(m[1]) : 0) + 1; return n <= nP ? { r: "practice", i: n } : { r: "practice" }; }
+    const r = { "#/instructions": "instructions", "#/sessions": "sessions", "#/review": "review", "#/submit": "submit" }[h];
+    return r ? { r } : ["#/consent", "#/", "#", ""].includes(h) ? { r: "consent" } : null;
+  }
   function route() {
     shead.hidden = true; setTopOffset();
     const h = location.hash || "#/consent";
+    setActive(null); current = null;
+    const ev = routeEvent(h); if (ev) logEvent("route", ev);
     let m;
     if (h === "#/consent" || h === "#/" || h === "#") renderConsent();
     else if (h === "#/instructions") renderInstructions();
