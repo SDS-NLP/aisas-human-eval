@@ -115,6 +115,7 @@
   const ACTION_NAME = { click: "Click", scroll: "Scroll", input: "Typed input", navigation: "Page navigation", tab_activate: "Tab switch" };
   function segmentLabels(logs, marks) { const out = []; let cur = null; for (const l of logs) { if (marks[l.log_id]) cur = marks[l.log_id].label; out.push(cur); } return out; }
   let toastTimer;
+  const compAnswers = {}; // practice id -> {question index: option} chosen but not yet checked (survives re-renders)
   let compFeedback = null; // {pid, attempt}: shown inside the comprehension panel after a wrong attempt (a toast alone was easy to miss)
   function toast(msg) { const el = document.getElementById("toast"); el.textContent = msg; el.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, 3500); }
 
@@ -258,7 +259,27 @@
     // All questions of an item are answered together; one "Check answers" press = one attempt (max 2 per item).
     const qs = Array.isArray(item.questions) && item.questions.length ? item.questions
       : [{ question: item.question, options: item.options, correct_index: item.correct_index }];
+    const wireComp = () => {
+      // restore answers chosen before a re-render (marking a practice step re-renders the panel) and remember new ones
+      const saved = compAnswers[pid] || {};
+      qs.forEach((_, qi) => { const r = document.querySelector(`input[name="comp-${qi}"][value="${saved[qi]}"]`); if (r) r.checked = true; });
+      document.querySelectorAll('#comp-panel input[type=radio]').forEach((r) => r.addEventListener("change", () => {
+        compAnswers[pid] = { ...(compAnswers[pid] || {}), [Number(r.name.slice(5))]: r.value }; }));
+      const chk = document.getElementById("btn-check");
+      if (chk) chk.addEventListener("click", () => {
+      const sels = qs.map((_, qi) => document.querySelector(`input[name="comp-${qi}"]:checked`));
+      if (sels.some((s) => !s)) { toast(qs.length > 1 ? "Please answer every question first." : "Please choose an answer first."); return; }
+      const a = (state.practice.attempts[pid] || 0) + 1; state.practice.attempts[pid] = a; delete compAnswers[pid];
+      if (sels.every((s, qi) => Number(s.value) === Number(qs[qi].correct_index))) {
+        state.practice.passed_items = { ...(state.practice.passed_items || {}), [pid]: true };
+        if (items.every((it, k) => state.practice.passed_items[it.id || `practice_${k + 1}`])) state.practice.passed = true;
+        compFeedback = null; document.getElementById("toast").hidden = true; persist(); renderPractice(i); showCompPanel();
+      } else if (a >= 2) { state.practice.failed = true; persist(); renderReturn("comprehension"); }
+      else { compFeedback = { pid, attempt: a }; persist(); toast(qs.length > 1 ? "Not all answers are as intended. Please re-read the stage guide and try once more." : "That is not the intended answer. Please re-read the stage guide and try once more."); renderPractice(i); showCompPanel(); }
+    });
+    };
     renderSessionView(fakeSession, {
+      onRender: wireComp,
       practice: true, title: `Practice ${i + 1} of ${items.length}: ${esc(item.title || "")}`, intro: item.intro || "",
       marks: state.practice.marks[pid],
       onMarksChange: () => saveState(),
@@ -272,18 +293,6 @@
         <div class="actions">${i > 0 ? `<a class="btn" href="#/practice/${i - 1}">Previous practice</a>` : '<a class="btn" href="#/instructions">Back to instructions</a>'}
           ${passedThis ? (i + 1 < items.length ? `<a class="btn btn-primary" href="#/practice/${i + 1}">Next practice</a>` : `<a class="btn btn-primary" href="#/sessions">Start the sessions</a>`) : ""}</div>
       </div>`,
-    });
-    const chk = document.getElementById("btn-check");
-    if (chk) chk.addEventListener("click", () => {
-      const sels = qs.map((_, qi) => document.querySelector(`input[name="comp-${qi}"]:checked`));
-      if (sels.some((s) => !s)) { toast(qs.length > 1 ? "Please answer every question first." : "Please choose an answer first."); return; }
-      const a = (state.practice.attempts[pid] || 0) + 1; state.practice.attempts[pid] = a;
-      if (sels.every((s, qi) => Number(s.value) === Number(qs[qi].correct_index))) {
-        state.practice.passed_items = { ...(state.practice.passed_items || {}), [pid]: true };
-        if (items.every((it, k) => state.practice.passed_items[it.id || `practice_${k + 1}`])) state.practice.passed = true;
-        compFeedback = null; document.getElementById("toast").hidden = true; persist(); renderPractice(i); showCompPanel();
-      } else if (a >= 2) { state.practice.failed = true; persist(); renderReturn("comprehension"); }
-      else { compFeedback = { pid, attempt: a }; persist(); toast(qs.length > 1 ? "Not all answers are as intended. Please re-read the stage guide and try once more." : "That is not the intended answer. Please re-read the stage guide and try once more."); renderPractice(i); showCompPanel(); }
     });
     renderHeader("practice");
   }
@@ -390,6 +399,7 @@
     shead.querySelectorAll(".filter").forEach((b) => b.addEventListener("click", () => { view.filter = b.dataset.f; renderSessionView(s, opts, true); }));
     main.querySelectorAll("tr.step").forEach((tr) => wireRow(tr));
     renderViewer();
+    if (typeof opts.onRender === "function") opts.onRender(); // footer controls are re-created on every render: wire them again
     window.scrollTo(0, scrollY);
   }
 
