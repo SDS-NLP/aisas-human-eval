@@ -474,7 +474,7 @@ window.PARTICIPANT_CONFIG = {
           "correct_index": 2
         },
         {
-          "question": "The session starts in Interest on step #1. At which step does the stage change for the first time?",
+          "question": "At which step does the stage change to Search for the first time?",
           "options": [
             "Step #3 (typing “tide pens” in the search box)",
             "Step #5 (scrolling the search results)",
