@@ -6,7 +6,9 @@
  * 2026-10-29, second change (requester): the definitions themselves listed concrete operations (searching, filtering
  * search results, reading the detail page, the cart, add to cart, ...). They now state the stage only, e.g. Interest =
  * interest in a product category, Search = examining one specific product. The previous wording is this file at 0284601.
- *   Uncertain and the intro sentence are unchanged. Terminology: stage / change point / step / session (SPEC.md §7). */
+ *   Uncertain and the intro sentence are unchanged. Terminology: stage / change point / step / session (SPEC.md §7).
+ * 2026-10-29, third change (requester): `order` says that stages need not occur in order and that Interest and Search can
+ * alternate, again without concrete operations. Shown after the definitions on the instructions page and in the Stage guide. */
 window.PARTICIPANT_CODEBOOK = {
   version: "v002 (English version for participants, definitions only, without concrete operations; 2026-10-29)",
   codebook_version: "v002",
@@ -24,5 +26,6 @@ window.PARTICIPANT_CODEBOOK = {
     uncertain: {
       definition: "The behaviour does not clearly belong to any of the other labels, is ambiguous, or seems unrelated to shopping. Also use it when there is not enough evidence or two labels are equally plausible."
     }
-  }
+  },
+  order: "The stages do not have to occur in order, and an earlier stage can return. In particular, Interest and Search can alternate within a session: a shopper who is examining one specific product (Search) may turn back to a product category or a set of candidate products (Interest), and later focus on a product again (Search). Mark each of these changes."
 };

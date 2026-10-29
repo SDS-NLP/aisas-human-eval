@@ -84,7 +84,7 @@
   const NS_KEY = LOCAL ? `aisas_local_eval_v1:cb-${CODEBOOK_VERSION}:${BUNDLE_FP}`
     : `aisas_prolific_v1:cb-${CODEBOOK_VERSION}:${isPlaceholder(CFG.study_id) ? "unconfigured" : CFG.study_id}:${allocToken || "noalloc"}`;
   function blankTiming() { return { practice: {}, sessions: {}, events: [], events_dropped: 0 }; }
-  function blankState() { return { consent_at: null, practice: { attempts: {}, passed: false, failed: false, skipped_dev: false, marks: {}, opened: {} }, marks: {}, sessions: {}, timing: blankTiming(), submission: { status: "none", attempts: 0, receipt: null, submitted_at: null, last_error: null } }; }
+  function blankState() { return { consent_at: null, practice: { attempts: {}, passed: false, failed: false, skipped_dev: false, marks: {}, opened: {} }, marks: {}, sessions: {}, opened: {}, timing: blankTiming(), submission: { status: "none", attempts: 0, receipt: null, submitted_at: null, last_error: null } }; }
   let state = loadState();
   function loadState() {
     try { const raw = localStorage.getItem(NS_KEY); if (raw) { const s = JSON.parse(raw); const b = blankState(); return { ...b, ...s, practice: { ...b.practice, ...(s.practice || {}) }, timing: { ...b.timing, ...(s.timing || {}) }, submission: { ...b.submission, ...(s.submission || {}) } }; } }
@@ -275,7 +275,7 @@
         <li><b>Whenever the stage changes, click the new stage on the step where the change happens.</b> You only mark the first step and each change point. The coloured band on the left shows how your marks extend to the following steps. If the stage never changes, the starting stage is all you need.</li>
         <li><b>Correct a mark</b> by clicking another stage on the same step; remove it with the × button.</li>
         <li>Some steps show a <b>shopper rationale</b>: a short note the shopper wrote about what they were doing at that moment. Use it as one more piece of context.</li>
-        <li>When you are done with a session, press <b>Mark this session as complete</b>. You can reopen and change it until you submit.</li>
+        <li>When you are done with a session, press <b>Mark this session as complete</b>. This is possible only after every step of the session has been opened (click it, or use the arrow keys); a step that has not been opened yet has an orange dot next to its number. You can reopen and change a session until you submit.</li>
         ${LOCAL ? "<li>You can <b>review</b> and <b>export</b> your progress at any time from the Review page or the Export button at the top.</li>"
                 : "<li>After all sessions, <b>review</b> them and <b>submit</b>. The completion step appears only after your results have been received.</li>"}
       </ol>
@@ -283,7 +283,8 @@
       <p>There are four labels. Please use them <b>exactly as defined here</b>, even where the everyday meaning of the word differs.
         The same definitions are available at any time from the <b>Stage guide</b> button at the top right.</p>
       <ul>${LABELS.map((k) => `<li>${chip(k)} — ${esc(CODEBOOK.labels[k].definition)}</li>`).join("")}</ul>
-      <p>Judge from the observable steps and the surrounding context of the same session. The stages do not have to occur in order.</p>
+      <p>${esc(CODEBOOK.order || "The stages do not have to occur in order.")}</p>
+      <p>Judge from the observable steps and the surrounding context of the same session.</p>
       ${LOCAL ? "" : `<h3>Practice</h3>
       <p>Next is a short practice session with questions about it (a comprehension check). Open every step of the practice session before checking
         your answers. You can check your answers up to ${PRACTICE_ATTEMPTS} times; if they are still not all as intended after the last attempt, you will be
@@ -311,10 +312,15 @@
   // LOCKED: a pilot submission made under the 2026-10-21 rule (practice checked but not passed) keeps its receipt reachable
   function practiceDone() { return !!(state.practice.passed || state.practice.skipped_dev || LOCKED()); }
   function practiceFailed() { return !!state.practice.failed && !practiceDone(); }
-  const openedOf = (pid) => new Set((state.practice.opened || {})[pid] || []);
+  // Steps shown on the right at least once (row click, ↑/↓, Previous / Next, or a stage button of the row), per practice
+  // item and per assigned session. A practice check needs every practice step opened; so does "Mark this session as
+  // complete" (2026-10-29, requester, after the pilot: one participant opened only the steps they marked, 24% of the steps).
+  const openedList = (practice, key) => { const o = practice ? (state.practice.opened ||= {}) : (state.opened ||= {}); return (o[key] ||= []); };
+  const openedOf = (pid) => new Set(openedList(true, pid));
   const openedText = (n, total) => `Steps opened: ${n} of ${total}`;
-  function notePracticeOpened(pid, logId) { // called whenever a practice step is shown on the right
-    const o = state.practice.opened || (state.practice.opened = {}); const list = o[pid] || (o[pid] = []);
+  const stepList = (logs, max = 10) => logs.slice(0, max).map((l) => `#${l.pos}`).join(", ") + (logs.length > max ? ` and ${logs.length - max} more` : "");
+  function noteOpened(practice, key, logId) { // called whenever a step is shown on the right
+    const list = openedList(practice, key);
     if (list.includes(logId)) return;
     list.push(logId); saveState();
     const tr = main.querySelector(`tr.step[data-log="${logId}"]`); if (tr) tr.classList.remove("unopened");
@@ -421,7 +427,7 @@
     renderSessionView(fakeSession, {
       onRender: wireComp,
       practice: true, title: `Practice ${i + 1} of ${items.length}: ${esc(item.title || "")}`, intro: item.intro || "",
-      marks: state.practice.marks[pid], opened: passed ? null : opened,
+      marks: state.practice.marks[pid], showUnopened: !passed,
       onMarksChange: () => saveState(),
       footer: `<div class="panel" id="comp-panel">
         <h3>Comprehension check${passed ? "" : ` <span class="muted small">attempt ${used + 1} of ${PRACTICE_ATTEMPTS}</span>`}</h3>
@@ -471,6 +477,7 @@
   let selectedLogId = null, viewerShot = "auto";
   const view = { filter: "all" };
   let current = null; // { s, opts, marks }
+  let completeRefused = null; // session_uid whose "Mark this session as complete" was refused because steps were not opened yet
 
   function renderAssigned(n) {
     if (!guardSessions()) return;
@@ -481,7 +488,7 @@
     setActive("sessions", s.session_uid);
     renderSessionView(s, {
       practice: false, index: i, total: ASSIGNED.sessions.length, title: `Session ${i + 1} of ${ASSIGNED.sessions.length}`,
-      marks: state.marks[s.session_uid], onMarksChange: () => saveState(),
+      marks: state.marks[s.session_uid], showUnopened: !LOCKED(), onMarksChange: () => saveState(),
     });
     renderHeader("sessions");
   }
@@ -494,6 +501,7 @@
     const seg = segmentLabels(s.logs, marks);
     const meta = opts.practice ? {} : (state.sessions[s.session_uid] || {});
     const locked = !opts.practice && LOCKED();
+    const opened = opts.showUnopened ? new Set(openedList(!!opts.practice, s.session_uid)) : null;
     const nav = opts.practice ? "" : `<div class="actions" style="margin-top:0">
         <a class="btn" href="#/sessions">All sessions</a>
         ${opts.index > 0 ? `<a class="btn" href="#/s/${opts.index}">← Previous session</a>` : ""}
@@ -516,7 +524,7 @@
       if (show) {
         const lab = seg[i];
         const btns = LABELS.map((k) => `<button type="button" class="mbtn ${k} ${mk && mk.label === k ? "on" : ""}" data-l="${k}" aria-pressed="${mk && mk.label === k ? "true" : "false"}" ${locked ? "disabled" : ""} title="From step #${l.pos}: ${LABEL_NAME[k]}">${LABEL_NAME[k]}</button>`).join("");
-        const unopened = opts.opened && !opts.opened.has(l.log_id) && l.log_id !== selectedLogId ? "unopened" : ""; // practice only
+        const unopened = opened && !opened.has(l.log_id) && l.log_id !== selectedLogId ? "unopened" : "";
         body.push(`<tr class="step ${l.page_changed ? "page-changed" : ""} ${l.log_id === selectedLogId ? "selected" : ""} ${unopened}" data-log="${l.log_id}" tabindex="0" aria-selected="${l.log_id === selectedLogId}">
           <td class="pos"><b>#${l.pos}</b></td>
           <td class="band ${lab || ""}">${mk ? `${chip(mk.label)}<span class="cp">change point${locked ? "" : ' <button type="button" class="xmark" title="Remove this change point">×</button>'}</span>` : lab ? `<span class="small">${LABEL_NAME[lab]}</span>` : '<span class="unset">Not set</span>'}</td>
@@ -598,7 +606,7 @@
     viewer.hidden = false;
     const i = s.logs.findIndex((l) => l.log_id === selectedLogId); const l = s.logs[i];
     if (!l) { viewer.innerHTML = ""; return; }
-    if (opts.practice) notePracticeOpened(s.session_uid, l.log_id);
+    noteOpened(!!opts.practice, s.session_uid, l.log_id);
     const locked = !opts.practice && LOCKED();
     const seg = segmentLabels(s.logs, marks);
     const shot = pickScreenshot(s.logs, i);
@@ -614,7 +622,10 @@
     const sub = l.click_type || l.navigation_type;
     const actText = l.observation && (l.observation.element_text || (l.action_type === "input" ? l.observation.input_text : null));
     const meta = opts.practice ? {} : (state.sessions[s.session_uid] || {});
-    const viewedAll = (meta.max_pos_viewed || 0) >= s.logs.length;
+    const seen = new Set(openedList(!!opts.practice, s.session_uid)); const unopened = s.logs.filter((x) => !seen.has(x.log_id));
+    // shown after a refused "Mark this session as complete" until every step has been opened; the list shrinks as steps are opened
+    const openNotice = !opts.practice && !meta.completed && completeRefused === s.session_uid && unopened.length
+      ? `<div class="blocker" id="complete-feedback" role="alert">Please open every step before completing this session (click it, or use ↑/↓). Not opened yet: ${stepList(unopened)}.</div>` : "";
     // Layout (advisor review 2026-10-21): Previous / Next on the left, next to the stage buttons of the step table, and
     // "What happened" above the screenshot, so that the action is read before the screen.
     viewer.innerHTML = `
@@ -630,7 +641,7 @@
       ${opts.practice ? "" : `<div class="viewer-section">
         <textarea id="sess-comment" class="session-comment" placeholder="Comment on this session (optional)" ${locked ? "disabled" : ""}>${esc(meta.comment || "")}</textarea>
         <div class="actions"><button id="btn-complete" class="btn ${meta.completed ? "btn-done" : "btn-primary"}" ${locked ? "disabled" : ""}>${meta.completed ? "Reopen this session" : "Mark this session as complete"}</button>
-          <span class="muted small">${meta.completed ? "Completed." : viewedAll ? "You have viewed every step." : `Steps viewed so far: up to #${meta.max_pos_viewed || 1} of ${s.logs.length}.`}</span></div></div>`}`;
+          <span class="muted small">${meta.completed ? "Completed." : `<span id="opened-count">${openedText(s.logs.length - unopened.length, s.logs.length)}</span>${unopened.length ? " (open every step to complete; a step not opened yet has an orange dot)" : ""}`}</span></div>${openNotice}</div>`}`;
     viewer.scrollTop = vs;
     viewer.querySelectorAll("[data-shot]").forEach((b) => b.addEventListener("click", () => { viewerShot = b.dataset.shot; renderViewer(); }));
     const go = (d) => { const j = i + d; if (j < 0 || j >= s.logs.length) return; selectLog(s.logs[j].log_id, true); };
@@ -647,8 +658,8 @@
       const m = state.sessions[s.session_uid] || {};
       if (!m.completed) {
         if (!marks[s.logs[0].log_id]) { toast("Please choose the starting stage on step #1 before completing this session."); return; }
-        const va = (m.max_pos_viewed || 0) >= s.logs.length;
-        if (!va && !confirm(`You have viewed steps up to #${m.max_pos_viewed || 1} of ${s.logs.length}. Mark this session as complete anyway?`)) return;
+        if (unopened.length) { completeRefused = s.session_uid; renderViewer(); return; }
+        completeRefused = null;
         state.sessions[s.session_uid] = { ...m, completed: true, updated_at: now() };
         stampOnce(TM().sessions[s.session_uid] ||= {}, "completed_at");
         logEvent("complete", { s: evSession() });
@@ -692,9 +703,9 @@
     if (!LOCKED()) stampOnce(TM(), "review_opened_at");
     const rows = ASSIGNED.sessions.map((s, i) => {
       const m = state.sessions[s.session_uid] || {}; const marks = marksOf(s.session_uid);
-      const first = !!marks[s.logs[0].log_id]; const viewed = (m.max_pos_viewed || 0) >= s.logs.length;
+      const first = !!marks[s.logs[0].log_id]; const seen = new Set(openedList(false, s.session_uid)); const nOpened = s.logs.filter((l) => seen.has(l.log_id)).length;
       return `<tr><td>${i + 1}</td><td>${s.logs.length}</td><td>${Object.keys(marks).length}</td>
-        <td class="${first ? "ok" : "ng"}">${first ? "Yes" : "No"}</td><td class="${viewed ? "ok" : ""}">${viewed ? "All steps" : `Up to #${m.max_pos_viewed || 1}`}</td>
+        <td class="${first ? "ok" : "ng"}">${first ? "Yes" : "No"}</td><td class="${nOpened === s.logs.length ? "ok" : ""}">${nOpened === s.logs.length ? "All steps" : `${nOpened} of ${s.logs.length}`}</td>
         <td class="${m.completed ? "ok" : "ng"}">${m.completed ? "Completed" : "Not completed"}</td><td><a href="#/s/${i + 1}">${LOCKED() ? "View" : "Edit"}</a></td></tr>`;
     }).join("");
     const allOk = ASSIGNED.sessions.every((s) => state.sessions[s.session_uid]?.completed && marksOf(s.session_uid)[s.logs[0].log_id]);
@@ -703,7 +714,7 @@
       main.innerHTML = `<div class="narrow"><div class="panel"><h2>Review and export</h2>
         <p>Completed sessions: <b>${nDone} / ${ASSIGNED.sessions.length}</b>. A session with no stage change needs only the starting stage on step #1. You can export at any time;
         the export contains the raw change points (with session / step identifiers) plus completion and comments, and no model labels.</p>
-        <table class="review"><thead><tr><th>Session</th><th>Steps</th><th>Change points</th><th>Start stage set</th><th>Steps viewed</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+        <table class="review"><thead><tr><th>Session</th><th>Steps</th><th>Change points</th><th>Start stage set</th><th>Steps opened</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>
         ${allOk ? '<div class="success">All sessions are completed with a starting stage. You can export the final results.</div>' : '<div class="notice">Some sessions are not completed yet. You can still export the current progress.</div>'}
         <div class="actions"><a class="btn" href="#/sessions">Back to sessions</a>
           <button id="btn-export-progress" class="btn ${allOk ? "" : "btn-primary"}">Export progress (JSON)</button>
@@ -719,7 +730,7 @@
     }
     main.innerHTML = `<div class="narrow"><div class="panel"><h2>Review</h2>
       <p>Check that every session is completed and has a starting stage on step #1. A session with no stage change needs only the starting stage. You can still go back and edit until you submit.</p>
-      <table class="review"><thead><tr><th>Session</th><th>Steps</th><th>Change points</th><th>Start stage set</th><th>Steps viewed</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+      <table class="review"><thead><tr><th>Session</th><th>Steps</th><th>Change points</th><th>Start stage set</th><th>Steps opened</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>
       ${allOk ? "" : '<div class="blocker">Some sessions are not completed or have no starting stage. Please finish them before submitting.</div>'}
       <div class="actions"><a class="btn" href="#/sessions">Back to sessions</a>
         ${LOCKED() ? '<a class="btn btn-primary" href="#/receipt">Go to the completion step</a>' : `<button id="btn-to-submit" class="btn btn-primary" ${allOk ? "" : "disabled"}>Continue to submit</button>`}</div>
@@ -854,6 +865,7 @@
     const cb = CODEBOOK;
     let h = `<div class="guide-head"><h3>Stage guide</h3><button class="btn" id="guide-close">Close</button></div>${cb.intro ? `<p>${esc(cb.intro)}</p>` : ""}`;
     for (const k of LABELS) { const d = cb.labels[k]; if (!d) continue; h += `<h4>${chip(k)}</h4><p>${esc(d.definition)}</p>`; }
+    if (cb.order) h += `<p>${esc(cb.order)}</p>`;
     const g = document.getElementById("guide"); g.innerHTML = h; g.querySelector("#guide-close").addEventListener("click", toggleGuide);
   }
   function toggleGuide() { const g = document.getElementById("guide"); g.hidden = !g.hidden; logEvent(g.hidden ? "guide_close" : "guide_open"); const b = document.getElementById("btn-guide"); b.classList.toggle("btn-active", !g.hidden); b.setAttribute("aria-expanded", String(!g.hidden)); }
