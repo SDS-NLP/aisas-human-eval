@@ -112,7 +112,7 @@
   const now = () => new Date().toISOString();
   const marksOf = (uid) => state.marks[uid] || {};
   const LOCKED = () => !LOCAL && state.submission.status === "submitted";
-  const PRACTICE_ATTEMPTS = 3; // checks allowed per practice item before the participant is asked to return (2026-10-29, see the practice section)
+  const PRACTICE_ATTEMPTS = 2; // checks allowed per practice item before the participant is asked to return (2026-10-29: 3, then 2 the same day, Prolific's minimum; see the practice section)
 
   // ---------- timing (decided 2026-10-21): phase times, time on screen per session, and a short event log ----------
   // Used to measure where the time goes in the pilot (and in LOCAL mode, the researcher's own time). Recorded only after
