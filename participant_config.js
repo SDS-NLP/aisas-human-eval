@@ -13,7 +13,7 @@ window.PARTICIPANT_CONFIG = {
   // Decided 2026-10-05: pilot "aisas_pilot_2026_10" (runs first), main study "aisas_main_2026_10".
   // After the pilot: change this to "aisas_main_2026_10", rebuild/publish, redeploy the Worker with the same STUDY_ID and
   // regenerate the allocations (release/README.md "パイロットから本番への切り替え").
-  study_id: "aisas_pilot_2026_10",
+  study_id: "aisas_main_2026_10",       // 2026-10-29: switched to the main study (pilot finished 2026-10-22)
 
   // Texts shown on the consent / briefing page. Anything still containing "[CONFIG REQUIRED" makes the site not ready.
   study: {
@@ -63,7 +63,7 @@ window.PARTICIPANT_CONFIG = {
     {
       "id": "practice_v002_tide",
       "title": "Searching for a stain-remover pen",
-      "intro": "A short real session (12 steps, about 20 seconds). Go through the steps, choose the starting stage on step #1 and mark every step where the stage changes, exactly as you will do in the main sessions. Your practice marks are not scored. Then answer the three questions below; you can open the Stage guide at any time.",
+      "intro": "A short real session (12 steps, about 20 seconds). Open every step (click it, or use ↑/↓) to see what happened, choose the starting stage on step #1 and mark every step where the stage changes, exactly as you will do in the main sessions. Your practice marks are not scored. Then answer the five questions below; you can open the Stage guide at any time.",
       "logs": [
         {
           "log_id": "5e57241976",
@@ -434,6 +434,16 @@ window.PARTICIPANT_CONFIG = {
       ],
       "questions": [
         {
+          "question": "In step #3 the shopper types “tide pens” in the search box. Which stage is this?",
+          "options": [
+            "Interest",
+            "Search",
+            "Action",
+            "Uncertain"
+          ],
+          "correct_index": 0
+        },
+        {
           "question": "In step #5 the shopper scrolls through the search results for “tide pens”. Which stage is this?",
           "options": [
             "Interest",
@@ -442,6 +452,16 @@ window.PARTICIPANT_CONFIG = {
             "Uncertain"
           ],
           "correct_index": 0
+        },
+        {
+          "question": "In step #7 the shopper scrolls through the product page of the Tide pen. Which stage is this?",
+          "options": [
+            "Interest",
+            "Search",
+            "Action",
+            "Uncertain"
+          ],
+          "correct_index": 1
         },
         {
           "question": "In step #12 the shopper clicks “Add to Cart”. Which stage is this?",

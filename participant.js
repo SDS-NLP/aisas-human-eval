@@ -84,7 +84,7 @@
   const NS_KEY = LOCAL ? `aisas_local_eval_v1:cb-${CODEBOOK_VERSION}:${BUNDLE_FP}`
     : `aisas_prolific_v1:cb-${CODEBOOK_VERSION}:${isPlaceholder(CFG.study_id) ? "unconfigured" : CFG.study_id}:${allocToken || "noalloc"}`;
   function blankTiming() { return { practice: {}, sessions: {}, events: [], events_dropped: 0 }; }
-  function blankState() { return { consent_at: null, practice: { attempts: {}, passed: false, skipped_dev: false, marks: {} }, marks: {}, sessions: {}, timing: blankTiming(), submission: { status: "none", attempts: 0, receipt: null, submitted_at: null, last_error: null } }; }
+  function blankState() { return { consent_at: null, practice: { attempts: {}, passed: false, failed: false, skipped_dev: false, marks: {}, opened: {} }, marks: {}, sessions: {}, timing: blankTiming(), submission: { status: "none", attempts: 0, receipt: null, submitted_at: null, last_error: null } }; }
   let state = loadState();
   function loadState() {
     try { const raw = localStorage.getItem(NS_KEY); if (raw) { const s = JSON.parse(raw); const b = blankState(); return { ...b, ...s, practice: { ...b.practice, ...(s.practice || {}) }, timing: { ...b.timing, ...(s.timing || {}) }, submission: { ...b.submission, ...(s.submission || {}) } }; } }
@@ -112,6 +112,7 @@
   const now = () => new Date().toISOString();
   const marksOf = (uid) => state.marks[uid] || {};
   const LOCKED = () => !LOCAL && state.submission.status === "submitted";
+  const PRACTICE_ATTEMPTS = 3; // checks allowed per practice item before the participant is asked to return (2026-10-29, see the practice section)
 
   // ---------- timing (decided 2026-10-21): phase times, time on screen per session, and a short event log ----------
   // Used to measure where the time goes in the pilot (and in LOCAL mode, the researcher's own time). Recorded only after
@@ -241,7 +242,9 @@
         <h3>Who is running this study</h3><p>${cfgText(st.institution, "institution / research team")}</p>
         <h3>What you will do</h3>
         <p>You will look at ${ASSIGNED.sessions ? ASSIGNED.sessions.length : "[N]"} recorded shopping sessions on Amazon.com, step by step, with screenshots where they were recorded.
-        For each session you will choose the stage the shopper starts in and mark the steps where the stage changes. Estimated time: ${typeof st.estimated_minutes === "number" ? esc(st.estimated_minutes) + " minutes" : '<span class="config-missing">[CONFIG REQUIRED: estimated minutes]</span>'}.</p>
+        For each session you will choose the stage the shopper starts in and mark the steps where the stage changes.
+        Before the sessions there is a short practice with a comprehension check; if your answers are not all as intended after ${PRACTICE_ATTEMPTS} attempts,
+        you will be asked to return your submission. Estimated time: ${typeof st.estimated_minutes === "number" ? esc(st.estimated_minutes) + " minutes" : '<span class="config-missing">[CONFIG REQUIRED: estimated minutes]</span>'}.</p>
         <p>The sessions come from the public OPeRA dataset (CC BY 4.0). They were recorded from other people and contain no information about you.</p>
         <h3>Payment</h3><p>${cfgText(st.payment_text, "reward and approval timeline")}</p>
         <h3>Your data</h3><p>${cfgText(st.data_retention, "what is recorded and how long it is kept")}</p><p>${cfgText(st.data_sharing, "publication / sharing of anonymised markings")}</p>
@@ -277,12 +280,14 @@
                 : "<li>After all sessions, <b>review</b> them and <b>submit</b>. The completion step appears only after your results have been received.</li>"}
       </ol>
       <h3>The stages</h3>
-      <p>There are four labels. Please use them <b>exactly as defined here</b>, even where the everyday meaning of the word differs: in this study,
-        <b>searching</b> for products and looking through search results counts as ${chip("interest")}, while looking closely at <b>one specific product</b> counts as ${chip("search")}.
-        The full guide, with definitions and examples, is available at any time from the <b>Stage guide</b> button at the top right. In short:</p>
+      <p>There are four labels. Please use them <b>exactly as defined here</b>, even where the everyday meaning of the word differs.
+        The same definitions are available at any time from the <b>Stage guide</b> button at the top right.</p>
       <ul>${LABELS.map((k) => `<li>${chip(k)} — ${esc(CODEBOOK.labels[k].definition)}</li>`).join("")}</ul>
-      ${CODEBOOK.quick_rules && CODEBOOK.quick_rules.length ? `<p>Quick rules:</p><ul>${CODEBOOK.quick_rules.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
       <p>Judge from the observable steps and the surrounding context of the same session. The stages do not have to occur in order.</p>
+      ${LOCAL ? "" : `<h3>Practice</h3>
+      <p>Next is a short practice session with questions about it (a comprehension check). Open every step of the practice session before checking
+        your answers. You can check your answers up to ${PRACTICE_ATTEMPTS} times; if they are still not all as intended after the last attempt, you will be
+        asked to return your submission on Prolific.</p>`}
       <div class="actions"><a class="btn" href="#/consent">Back</a><button id="btn-next" class="btn btn-primary">${LOCAL ? "Continue to sessions" : "Continue to practice"}</button></div>
     </div></div>`;
     document.getElementById("btn-next").addEventListener("click", () => { state.instructions_read = true; stampOnce(TM(), "instructions_done_at"); persist(); location.hash = LOCAL ? "#/sessions" : "#/practice"; });
@@ -290,13 +295,42 @@
   }
 
   // ---------- practice + comprehension ----------
-  // Decided 2026-10-21: one check per practice item, no attempt limit and no exclusion. After "Check answers" the answers are
-  // locked and shown in colour (intended answer green, a different chosen answer red), and the participant continues to the
-  // sessions even if some answers were not as intended. Payload (unchanged shape): practice.passed = every answer of every
-  // item was as intended at its check; practice.attempts[id] = 1 once the item has been checked.
+  // Decided 2026-10-29 after the pilot (replaces 2026-10-21: one check, answers shown, continue even if not as intended):
+  // - Up to PRACTICE_ATTEMPTS checks per practice item. A check counts only when every question is answered and every step
+  //   of the practice session has been opened (shown on the right) at least once; otherwise a notice says what is missing
+  //   and no attempt is used.
+  // - A check that is not all as intended (attempts left): the questions not answered as intended are shown in red, without
+  //   the intended answer, with a pointer to the Stage guide; the participant changes the answers and checks again.
+  // - All as intended -> passed, the sessions open. Still not all as intended after the last attempt -> the participant is
+  //   asked to return the submission on Prolific (Prolific's comprehension-check policy: return, never a rejection), and the
+  //   sessions stay closed in this browser. Nothing is sent in that case.
+  // Payload (unchanged shape, so the endpoint needs no change): practice.passed = true (only passed participants can reach
+  // "Send my results"); practice.attempts[id] = checks used. Each check is a practice_check event in the timing record.
   function showCompPanel() { const el = document.getElementById("comp-panel"); if (el) el.scrollIntoView({ block: "start" }); }
   function practiceItems() { return Array.isArray(CFG.practice) ? CFG.practice : []; }
-  function practiceDone() { return !!(state.practice.checked || state.practice.passed || state.practice.skipped_dev); }
+  // LOCKED: a pilot submission made under the 2026-10-21 rule (practice checked but not passed) keeps its receipt reachable
+  function practiceDone() { return !!(state.practice.passed || state.practice.skipped_dev || LOCKED()); }
+  function practiceFailed() { return !!state.practice.failed && !practiceDone(); }
+  const openedOf = (pid) => new Set((state.practice.opened || {})[pid] || []);
+  const openedText = (n, total) => `Steps opened: ${n} of ${total}`;
+  function notePracticeOpened(pid, logId) { // called whenever a practice step is shown on the right
+    const o = state.practice.opened || (state.practice.opened = {}); const list = o[pid] || (o[pid] = []);
+    if (list.includes(logId)) return;
+    list.push(logId); saveState();
+    const tr = main.querySelector(`tr.step[data-log="${logId}"]`); if (tr) tr.classList.remove("unopened");
+    const c = document.getElementById("opened-count"); if (c && current) c.textContent = openedText(list.length, current.s.logs.length);
+  }
+  function renderPracticeFailed() {
+    lastStep = "practice"; viewer.hidden = true; shead.hidden = true; setTopOffset(); setActive(null); current = null;
+    main.innerHTML = `<div class="narrow"><div class="panel"><h2>Practice</h2>
+      <div class="blocker" role="alert"><b>The comprehension check was not passed.</b> After ${PRACTICE_ATTEMPTS} attempts the answers were still not all
+        as intended, so this study cannot continue to the sessions.</div>
+      <p>As explained in the study description, please <b>return your submission on Prolific</b>: open this study in Prolific and return it
+        ("Return submission" or "Stop without completing", depending on the page). Please do not submit it as completed (for example with "NOCODE").</p>
+      <p>Nothing from this task has been sent to us. Thank you for your time.</p>
+    </div></div>`;
+    renderHeader("practice"); window.scrollTo(0, 0);
+  }
   function renderPractice(idx) {
     if (LOCAL) { location.hash = started() ? "#/sessions" : "#/consent"; return; } // the researcher's own local evaluation has no practice / comprehension step
     lastStep = "practice"; viewer.hidden = true;
@@ -311,43 +345,53 @@
       const b = document.getElementById("btn-skip"); if (b) b.addEventListener("click", () => { state.practice.skipped_dev = true; persist(); location.hash = "#/sessions"; });
       renderHeader("practice"); return;
     }
+    if (practiceFailed()) { renderPracticeFailed(); return; }
     const i = Math.min(Math.max(idx || 0, 0), items.length - 1);
     const item = items[i];
     const pid = item.id || `practice_${i + 1}`;
     if (!state.practice.marks[pid]) state.practice.marks[pid] = {};
-    const result = (state.practice.checked_items || {})[pid] || null; // {answers: [option index per question], correct: [bool per question]}
+    const result = (state.practice.checked_items || {})[pid] || null; // last check: {answers: [option index per question], correct: [bool per question]}
+    const used = state.practice.attempts[pid] || 0;
+    const passed = !!result && result.correct.every(Boolean);
+    const left = PRACTICE_ATTEMPTS - used;
     if (!activeTarget || activeTarget.key !== pid) setActive("practice", pid);
     const logs = item.logs || [];
     const fakeSession = { session_uid: pid, logs, n_logs: logs.length };
+    const opened = openedOf(pid);
     // An item has either one question (question / options / correct_index) or several (questions: [{question, options, correct_index}]).
     const qs = Array.isArray(item.questions) && item.questions.length ? item.questions
       : [{ question: item.question, options: item.options, correct_index: item.correct_index }];
     const nOk = result ? result.correct.filter(Boolean).length : 0;
+    // After a check, only whether each question was as intended is shown, never the intended answer.
     const qHtml = qs.map((q, qi) => {
       const chosen = result ? result.answers[qi] : null;
       const ok = result ? result.correct[qi] : null;
-      const opts = (q.options || []).map((o, k) => {
-        const intended = !!result && k === Number(q.correct_index);
-        const chosenWrong = !!result && k === chosen && !ok;
-        const tag = intended ? `<span class="opt-tag ok">${k === chosen ? "✓ your answer (as intended)" : "✓ intended answer"}</span>`
-          : chosenWrong ? '<span class="opt-tag ng">✗ your answer</span>' : "";
-        return `<label class="${intended ? "opt-correct" : chosenWrong ? "opt-wrong" : ""}"><input type="radio" name="comp-${qi}" value="${k}"${result ? " disabled" : ""}${result && k === chosen ? " checked" : ""}> ${esc(o)}${tag}</label>`;
-      }).join("");
+      const wrong = !!result && !ok;
+      const opts = (q.options || []).map((o, k) => `<label class="${passed && k === chosen ? "opt-correct" : ""}"><input type="radio" name="comp-${qi}" value="${k}"${passed ? " disabled" : ""}${passed && k === chosen ? " checked" : ""}> ${esc(o)}</label>`).join("");
       const mark = result ? (ok ? '<span class="q-res ok">✓</span> ' : '<span class="q-res ng">✗</span> ') : "";
-      return `<div class="comp-q"><p>${mark}${qs.length > 1 ? `<b>${qi + 1}.</b> ` : ""}${esc(q.question || "")}</p><div class="options">${opts}</div></div>`;
+      const note = wrong ? '<p class="q-note">Not answered as intended. Please check the Stage guide (top right) and choose again.</p>' : "";
+      return `<div class="comp-q${wrong ? " wrong" : ""}"><p>${mark}${qs.length > 1 ? `<b>${qi + 1}.</b> ` : ""}${esc(q.question || "")}</p>${note}<div class="options">${opts}</div></div>`;
     }).join("");
-    const summary = result ? `<div class="${nOk === qs.length ? "success" : "notice"}" id="comp-result" role="status"><b>${nOk} of ${qs.length} answered as intended.</b>
-      ${nOk === qs.length ? "" : "The intended answers are shown in green; an answer that differs is shown in red."}
-      Please keep these examples in mind in your sessions. The Stage guide (top right) is available at any time.</div>` : "";
-    const notice = !result && compNotice && compNotice.pid === pid ? `<div class="blocker" id="comp-feedback" role="alert">${esc(compNotice.text)}</div>` : "";
-    const next = result ? (i + 1 < items.length ? `<a class="btn btn-primary" href="#/practice/${i + 1}">Next practice</a>` : '<a class="btn btn-primary" href="#/sessions">Start the sessions</a>') : "";
+    const nth = (n) => ["first", "second", "third", "fourth", "fifth"][n - 1] || `${n}th`;
+    const summary = passed ? `<div class="success" id="comp-result" role="status"><b>All ${qs.length} answered as intended.</b>
+        ${i + 1 < items.length ? "Please continue to the next practice." : "You can now start your sessions."} The Stage guide (top right) is available at any time.</div>`
+      : result ? `<div class="blocker" id="comp-result" role="status"><b>${nOk} of ${qs.length} answered as intended</b>.
+        The question${qs.length - nOk === 1 ? "" : "s"} marked in red ${qs.length - nOk === 1 ? "was" : "were"} not answered as intended. Please re-read the stage definitions
+        in the Stage guide (top right), change your answer${qs.length - nOk === 1 ? "" : "s"} and check again. ${left === 1 ? "This is your last attempt." : `You have ${left} attempts left.`}</div>` : "";
+    const notice = !passed && compNotice && compNotice.pid === pid ? `<div class="blocker" id="comp-feedback" role="alert">${esc(compNotice.text)}</div>` : "";
+    const rules = passed ? "" : `<p class="muted small">Before checking, open every step of the practice session (click it, or use ↑/↓); a step that has not been opened yet
+        has an orange dot next to its number. <b id="opened-count">${openedText(logs.filter((l) => opened.has(l.log_id)).length, logs.length)}</b>.
+        You can check your answers up to ${PRACTICE_ATTEMPTS} times. After a check, the questions not answered as intended are shown in red; the intended answers are not shown.
+        If the answers are still not all as intended after the ${nth(PRACTICE_ATTEMPTS)} attempt, you will be asked to return your submission on Prolific.</p>`;
+    const next = passed ? (i + 1 < items.length ? `<a class="btn btn-primary" href="#/practice/${i + 1}">Next practice</a>` : '<a class="btn btn-primary" href="#/sessions">Start the sessions</a>') : "";
     const wireComp = () => {
-      if (result) return; // answers are locked once checked
-      // restore answers chosen before a re-render (marking a practice step re-renders the panel) and remember new ones
-      const saved = compAnswers[pid] || {};
+      if (passed) return; // answers are locked once all are as intended
+      // restore answers chosen before a re-render (marking a practice step re-renders the panel) and remember new ones;
+      // after a check that was not all as intended, start from the answers of that check
+      const saved = compAnswers[pid] || (result ? Object.fromEntries(result.answers.map((k, qi) => [qi, String(k)])) : {});
       qs.forEach((_, qi) => { const r = document.querySelector(`input[name="comp-${qi}"][value="${saved[qi]}"]`); if (r) r.checked = true; });
       document.querySelectorAll("#comp-panel input[type=radio]").forEach((r) => r.addEventListener("change", () => {
-        compAnswers[pid] = { ...(compAnswers[pid] || {}), [Number(r.name.slice(5))]: r.value }; }));
+        compAnswers[pid] = { ...saved, ...(compAnswers[pid] || {}), [Number(r.name.slice(5))]: r.value }; }));
       const chk = document.getElementById("btn-check");
       if (chk) chk.addEventListener("click", () => {
         const sels = qs.map((_, qi) => document.querySelector(`input[name="comp-${qi}"]:checked`));
@@ -355,29 +399,36 @@
           compNotice = { pid, text: qs.length > 1 ? "Please answer every question first." : "Please choose an answer first." };
           renderPractice(i); showCompPanel(); return;
         }
+        const seen = openedOf(pid); const missing = logs.filter((l) => !seen.has(l.log_id)).map((l) => `#${l.pos}`);
+        if (missing.length) { // not an attempt: nothing is judged until every step has been opened
+          compNotice = { pid, text: `Please open every step of the practice session before checking (click it, or use ↑/↓). Not opened yet: ${missing.join(", ")}.` };
+          renderPractice(i); showCompPanel(); return;
+        }
         const answers = sels.map((x) => Number(x.value));
         const correct = answers.map((k, qi) => k === Number(qs[qi].correct_index));
+        const n = used + 1;
         state.practice.checked_items = { ...(state.practice.checked_items || {}), [pid]: { answers, correct } };
-        state.practice.attempts[pid] = 1;
-        stampOnce(TM().practice[pid] ||= {}, "checked_at");
+        state.practice.attempts[pid] = n;
         logEvent("practice_check", { s: "practice", i: i + 1, n_ok: correct.filter(Boolean).length });
+        if (correct.every(Boolean)) stampOnce(TM().practice[pid] ||= {}, "checked_at");
+        else if (n >= PRACTICE_ATTEMPTS) state.practice.failed = true;
         const all = items.map((it, k) => state.practice.checked_items[it.id || `practice_${k + 1}`]);
-        if (all.every(Boolean)) { state.practice.checked = true; state.practice.passed = all.every((r) => r.correct.every(Boolean)); stampOnce(TM(), "practice_checked_at"); }
+        if (all.every((r) => r && r.correct.every(Boolean))) { state.practice.passed = true; stampOnce(TM(), "practice_checked_at"); }
         delete compAnswers[pid]; compNotice = null;
-        persist(); renderPractice(i); showCompPanel();
+        persist(); renderPractice(i); if (!state.practice.failed) showCompPanel();
       });
     };
     renderSessionView(fakeSession, {
       onRender: wireComp,
       practice: true, title: `Practice ${i + 1} of ${items.length}: ${esc(item.title || "")}`, intro: item.intro || "",
-      marks: state.practice.marks[pid],
+      marks: state.practice.marks[pid], opened: passed ? null : opened,
       onMarksChange: () => saveState(),
       footer: `<div class="panel" id="comp-panel">
-        <h3>Comprehension check</h3>
+        <h3>Comprehension check${passed ? "" : ` <span class="muted small">attempt ${used + 1} of ${PRACTICE_ATTEMPTS}</span>`}</h3>
         ${summary}${notice}
         ${qHtml}
-        ${result ? "" : `<p class="muted small">After you check, the intended answers are shown and you continue to your sessions.</p>
-          <div class="actions"><button id="btn-check" class="btn btn-primary">Check ${qs.length > 1 ? "answers" : "answer"}</button></div>`}
+        ${rules}
+        ${passed ? "" : `<div class="actions"><button id="btn-check" class="btn btn-primary">Check ${qs.length > 1 ? "answers" : "answer"}</button></div>`}
         <div class="actions">${i > 0 ? `<a class="btn" href="#/practice/${i - 1}">Previous practice</a>` : '<a class="btn" href="#/instructions">Back to instructions</a>'}
           ${next}</div>
       </div>`,
@@ -465,7 +516,8 @@
       if (show) {
         const lab = seg[i];
         const btns = LABELS.map((k) => `<button type="button" class="mbtn ${k} ${mk && mk.label === k ? "on" : ""}" data-l="${k}" aria-pressed="${mk && mk.label === k ? "true" : "false"}" ${locked ? "disabled" : ""} title="From step #${l.pos}: ${LABEL_NAME[k]}">${LABEL_NAME[k]}</button>`).join("");
-        body.push(`<tr class="step ${l.page_changed ? "page-changed" : ""} ${l.log_id === selectedLogId ? "selected" : ""}" data-log="${l.log_id}" tabindex="0" aria-selected="${l.log_id === selectedLogId}">
+        const unopened = opts.opened && !opts.opened.has(l.log_id) && l.log_id !== selectedLogId ? "unopened" : ""; // practice only
+        body.push(`<tr class="step ${l.page_changed ? "page-changed" : ""} ${l.log_id === selectedLogId ? "selected" : ""} ${unopened}" data-log="${l.log_id}" tabindex="0" aria-selected="${l.log_id === selectedLogId}">
           <td class="pos"><b>#${l.pos}</b></td>
           <td class="band ${lab || ""}">${mk ? `${chip(mk.label)}<span class="cp">change point${locked ? "" : ' <button type="button" class="xmark" title="Remove this change point">×</button>'}</span>` : lab ? `<span class="small">${LABEL_NAME[lab]}</span>` : '<span class="unset">Not set</span>'}</td>
           <td class="mark"><div class="markbtns">${btns}</div>${mk && !locked ? `<input class="mark-comment" type="text" placeholder="Note (optional)" value="${esc(mk.comment || "")}" aria-label="Note for this change point">` : mk && mk.comment ? `<div class="small muted">${esc(mk.comment)}</div>` : ""}</td>
@@ -546,6 +598,7 @@
     viewer.hidden = false;
     const i = s.logs.findIndex((l) => l.log_id === selectedLogId); const l = s.logs[i];
     if (!l) { viewer.innerHTML = ""; return; }
+    if (opts.practice) notePracticeOpened(s.session_uid, l.log_id);
     const locked = !opts.practice && LOCKED();
     const seg = segmentLabels(s.logs, marks);
     const shot = pickScreenshot(s.logs, i);
@@ -796,11 +849,11 @@
   }
 
   // ---------- stage guide ----------
+  // 2026-10-29 (requester, after the pilot): the guide shows the label definitions only, no examples or rules
   function renderGuide() {
-    const cb = CODEBOOK; const list = (a) => a && a.length ? `<ul>${a.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : "";
-    let h = `<div class="guide-head"><h3>Stage guide</h3><button class="btn" id="guide-close">Close</button></div>${list(cb.domain_notes)}`;
-    for (const k of LABELS) { const d = cb.labels[k]; if (!d) continue; h += `<h4>${chip(k)}</h4><p>${esc(d.definition)}</p>${d.hard_requirement ? `<p class="hard">${esc(d.hard_requirement)}</p>` : ""}<div class="lbl">Examples</div>${list(d.positive_examples)}${d.negative_examples && d.negative_examples.length ? `<div class="lbl">Not this stage</div>${list(d.negative_examples)}` : ""}<div class="lbl">Typical signals</div>${list(d.typical_signals)}`; }
-    h += `<h4>When in doubt</h4>${list(cb.tie_break_rules)}`;
+    const cb = CODEBOOK;
+    let h = `<div class="guide-head"><h3>Stage guide</h3><button class="btn" id="guide-close">Close</button></div>${cb.intro ? `<p>${esc(cb.intro)}</p>` : ""}`;
+    for (const k of LABELS) { const d = cb.labels[k]; if (!d) continue; h += `<h4>${chip(k)}</h4><p>${esc(d.definition)}</p>`; }
     const g = document.getElementById("guide"); g.innerHTML = h; g.querySelector("#guide-close").addEventListener("click", toggleGuide);
   }
   function toggleGuide() { const g = document.getElementById("guide"); g.hidden = !g.hidden; logEvent(g.hidden ? "guide_close" : "guide_open"); const b = document.getElementById("btn-guide"); b.classList.toggle("btn-active", !g.hidden); b.setAttribute("aria-expanded", String(!g.hidden)); }
